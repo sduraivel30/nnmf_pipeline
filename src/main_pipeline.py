@@ -21,17 +21,16 @@ from .baseline_comparison import BaselineComparator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 class NNMFPipeline:
     """Complete NNMF analysis pipeline based on Norman-Haignere et al. 2022."""
-    
+
     def __init__(self, 
                  n_permutations: int = 1000,
                  n_jobs: int = -1,
                  random_state: Optional[int] = None):
         """
         Initialize NNMF Pipeline.
-        
+
         Args:
             n_permutations: Number of permutations for statistical tests
             n_jobs: Number of parallel jobs (-1 for all cores)
@@ -39,19 +38,19 @@ class NNMFPipeline:
         """
         self.n_permutations = n_permutations
         self.n_jobs = n_jobs
-        
+
         if random_state is not None:
             np.random.seed(random_state)
-        
+
         # Initialize pipeline components
         self.statistical_analyzer = StatisticalAnalyzer(n_permutations, n_jobs)
         self.cross_validator = CrossValidator(n_jobs)
         self.model_fitter = ModelFitter()
         self.component_analyzer = ComponentAnalyzer()
         self.baseline_comparator = BaselineComparator()
-        
+
         logger.info(f"NNMF Pipeline initialized with {n_permutations} permutations")
-    
+
     def run_complete_analysis(
         self,
         electrode_data: np.ndarray,
@@ -62,11 +61,12 @@ class NNMFPipeline:
         init_reps: int = 10,
         test_frac: float = 0.2,
         save_results: bool = True,
-        output_dir: Optional[str] = None
+        output_dir: Optional[str] = None,
+        identify_significant_electrodes: bool = False  # New optional argument
     ) -> Dict[str, Any]:
         """
         Run complete NNMF analysis pipeline.
-        
+
         Args:
             electrode_data: [n_electrodes × total_time] neural data
             story_lengths: [n_stories] length of each story in samples  
@@ -77,8 +77,205 @@ class NNMFPipeline:
             test_frac: Fraction of data for testing
             save_results: Whether to save results to disk
             output_dir: Directory to save results (default: current directory)
-            
+            identify_significant_electrodes: Whether to perform significant electrode identification (optional)
+
         Returns:
             results: Complete analysis results dictionary
         """
-        logger.info(\"Starting complete NNMF analysis pipeline...\")\n        logger.info(f\"Data shape: {electrode_data.shape}, Stories: {len(story_lengths)}, Subjects: {len(set(subject_ids))}\")\n        \n        # Validate inputs\n        self._validate_inputs(electrode_data, story_lengths, subject_ids)\n        \n        results = {}\n        \n        # Step 1: Split data into runs\n        logger.info(\"Step 1: Splitting stories into temporal runs...\")\n        run1, run2, story_halves = split_stories_into_runs(electrode_data, story_lengths)\n        results['data_splits'] = {\n            'run1': run1,\n            'run2': run2, \n            'story_halves': story_halves\n        }\n        \n        # Step 2: Statistical analysis\n        logger.info(\"Step 2: Computing statistical reliability measures...\")\n        stat_analysis = self.statistical_analyzer.compute_stats(\n            run1, run2, electrode_data, story_halves, subject_ids\n        )\n        results['statistics'] = stat_analysis\n        \n        # Step 3: Define constraint configuration\n        logger.info(\"Step 3: Configuring NNMF constraints...\")\n        constraint_config = define_constraint_config(stat_analysis, np.min(story_lengths))\n        results['constraint_config'] = constraint_config\n        \n        # Step 4: Cross-validation search\n        logger.info(\"Step 4: Running cross-validation hyperparameter search...\")\n        cv_results = self.cross_validator.run_cross_validation(\n            electrode_data, story_lengths, max_components, \n            cv_splits, init_reps, test_frac, constraint_config\n        )\n        results['cross_validation'] = cv_results\n        \n        # Step 5: Fit final model on full dataset\n        logger.info(\"Step 5: Fitting final NNMF model...\")\n        final_model = self.model_fitter.fit_final_model(\n            electrode_data, \n            cv_results['optimal_components'],\n            cv_results['optimal_alpha'],\n            init_reps,\n            constraint_config\n        )\n        results['final_model'] = final_model\n        \n        # Step 6: Component analysis\n        logger.info(\"Step 6: Analyzing NNMF components...\")\n        component_analysis = self.component_analyzer.summarize_components(\n            final_model, electrode_data, story_halves, subject_ids\n        )\n        results['components'] = component_analysis\n        \n        # Step 7: Baseline comparisons\n        logger.info(\"Step 7: Running baseline method comparisons...\")\n        baseline_results = self.baseline_comparator.run_baseline_comparisons(\n            electrode_data, story_lengths, cv_results['optimal_components'],\n            cv_splits, constraint_config\n        )\n        results['baselines'] = baseline_results\n        \n        # Save results if requested\n        if save_results:\n            output_path = Path(output_dir) if output_dir else Path.cwd()\n            self._save_results(results, output_path)\n        \n        logger.info(\"Complete NNMF analysis pipeline finished successfully!\")\n        self._print_final_summary(results)\n        \n        return results\n    \n    def run_step_by_step(self, **kwargs) -> Dict[str, Any]:\n        \"\"\"Run pipeline step-by-step for interactive analysis.\"\"\"\n        # This allows users to run individual steps and inspect results\n        return self.run_complete_analysis(**kwargs)\n    \n    def _validate_inputs(\n        self, \n        electrode_data: np.ndarray, \n        story_lengths: np.ndarray, \n        subject_ids: List[str]\n    ):\n        \"\"\"Validate input data consistency.\"\"\"\n        n_electrodes, total_time = electrode_data.shape\n        \n        # Check dimensions\n        assert len(subject_ids) == n_electrodes, f\"Subject IDs length {len(subject_ids)} != n_electrodes {n_electrodes}\"\n        assert np.sum(story_lengths) == total_time, f\"Story lengths sum {np.sum(story_lengths)} != total_time {total_time}\"\n        \n        # Check data quality\n        assert not np.any(np.isnan(electrode_data)), \"Electrode data contains NaN values\"\n        assert not np.any(np.isinf(electrode_data)), \"Electrode data contains infinite values\"\n        assert np.all(story_lengths > 0), \"All story lengths must be positive\"\n        \n        logger.info(\"Input validation passed\")\n    \n    def _save_results(self, results: Dict[str, Any], output_dir: Path):\n        \"\"\"Save analysis results to disk.\"\"\"\n        output_dir.mkdir(exist_ok=True)\n        \n        # Save key results as numpy arrays\n        np.save(output_dir / 'final_model_W.npy', results['final_model']['W'])\n        np.save(output_dir / 'final_model_H.npy', results['final_model']['H'])\n        \n        # Save statistics and parameters as pickled dict\n        import pickle\n        with open(output_dir / 'analysis_results.pkl', 'wb') as f:\n            pickle.dump(results, f)\n        \n        logger.info(f\"Results saved to {output_dir}\")\n    \n    def _print_final_summary(self, results: Dict[str, Any]):\n        \"\"\"Print final analysis summary.\"\"\"\n        print(\"\\n\" + \"=\"*60)\n        print(\"NNMF ANALYSIS PIPELINE - FINAL SUMMARY\")\n        print(\"=\"*60)\n        \n        # Data summary\n        final_model = results['final_model']\n        stats = results['statistics']\n        cv = results['cross_validation']\n        \n        print(f\"\\nData Summary:\")\n        print(f\"  Electrodes: {final_model['W'].shape[0]}\")\n        print(f\"  Time points: {final_model['H'].shape[1]}\")\n        print(f\"  Stories: {results['data_splits']['story_halves']['n_stories']}\")\n        \n        print(f\"\\nOptimal Model:\")\n        print(f\"  Components: {final_model['n_components']}\")\n        print(f\"  Alpha: {final_model['alpha']:.4f}\")\n        print(f\"  Variance explained: {final_model['variance_explained']:.3f}\")\n        \n        print(f\"\\nElectrode Reliability:\")\n        n_electrodes = final_model['W'].shape[0]\n        n_sig_cr = stats['cross_run']['n_significant']\n        n_sig_perm = stats['cross_electrode']['n_significant_electrodes_perm']\n        print(f\"  Cross-run significant: {n_sig_cr}/{n_electrodes} ({100*n_sig_cr/n_electrodes:.1f}%)\")\n        print(f\"  Permutation significant: {n_sig_perm}/{n_electrodes} ({100*n_sig_perm/n_electrodes:.1f}%)\")\n        \n        print(f\"\\nModel Quality:\")\n        print(f\"  2nd-level correlation: {stats['cross_electrode']['second_level_correlation']:.3f}\")\n        print(f\"  Reconstruction error: {final_model['reconstruction_error']:.6f}\")\n        \n        print(\"\\n\" + \"=\"*60)\n\n\n# Convenience functions for direct usage\ndef run_nnmf_analysis(\n    electrode_data: np.ndarray,\n    story_lengths: np.ndarray, \n    subject_ids: List[str],\n    **kwargs\n) -> Dict[str, Any]:\n    \"\"\"Convenience function to run complete analysis.\"\"\"\n    pipeline = NNMFPipeline()\n    return pipeline.run_complete_analysis(\n        electrode_data, story_lengths, subject_ids, **kwargs\n    )\n\n\ndef load_analysis_results(results_path: str) -> Dict[str, Any]:\n    \"\"\"Load saved analysis results.\"\"\"\n    import pickle\n    with open(results_path, 'rb') as f:\n        return pickle.load(f)
+        logger.info("Starting complete NNMF analysis pipeline...")
+        logger.info(f"Data shape: {electrode_data.shape}, Stories: {len(story_lengths)}, Subjects: {len(set(subject_ids))}")
+
+        # Validate inputs
+        self._validate_inputs(electrode_data, story_lengths, subject_ids)
+
+        results = {}
+
+        # Step 1: Split data into runs
+        logger.info("Step 1: Splitting stories into temporal runs...")
+        run1, run2, story_halves = split_stories_into_runs(electrode_data, story_lengths)
+        results['data_splits'] = {
+            'run1': run1,
+            'run2': run2,
+            'story_halves': story_halves
+        }
+
+        # Step 2: Conditional statistical analysis
+        if identify_significant_electrodes:
+            logger.info("Step 2: Computing statistical reliability measures...")
+            stat_analysis = self.statistical_analyzer.compute_stats(
+                run1, run2, electrode_data, story_halves, subject_ids
+            )
+            results['statistics'] = stat_analysis
+
+            # Optional: Identify and select only significant electrodes for NNMF
+            significant_mask = np.array(stat_analysis['cross_run'].get('significant_electrodes_mask', []))
+            if significant_mask.size == 0:
+                logger.warning("No significance mask found in statistics; skipping electrode filtering.")
+            else:
+                n_sig = np.sum(significant_mask)
+                logger.info(f"Selecting {n_sig} significant electrodes out of {electrode_data.shape[0]}")
+                electrode_data = electrode_data[significant_mask, :]
+                subject_ids = [subject_ids[i] for i, flag in enumerate(significant_mask) if flag]
+                run1 = run1[significant_mask, :]
+                run2 = run2[significant_mask, :]
+                results['data_splits']['run1'] = run1
+                results['data_splits']['run2'] = run2
+
+        else:
+            logger.info("Skipping statistical analysis and significant electrode identification.")
+            # Provide empty/default stats dict to avoid errors downstream
+            stat_analysis = {
+                'cross_run': {
+                    'n_significant': 0,
+                    'significant_electrodes_mask': np.array([]),
+                    'correlations': []
+                },
+                'cross_electrode': {
+                    'n_significant_electrodes_perm': 0,
+                    'second_level_correlation': 0.0
+                }
+            }
+            results['statistics'] = stat_analysis
+
+        # Step 3: Define constraint configuration
+        logger.info("Step 3: Configuring NNMF constraints...")
+        constraint_config = define_constraint_config(stat_analysis, np.min(story_lengths))
+        results['constraint_config'] = constraint_config
+
+        # Step 4: Cross-validation search
+        logger.info("Step 4: Running cross-validation hyperparameter search...")
+        cv_results = self.cross_validator.run_cross_validation(
+            electrode_data, story_lengths, max_components,
+            cv_splits, init_reps, test_frac, constraint_config
+        )
+        results['cross_validation'] = cv_results
+
+        # Step 5: Fit final model on full dataset
+        logger.info("Step 5: Fitting final NNMF model...")
+        final_model = self.model_fitter.fit_final_model(
+            electrode_data,
+            cv_results['optimal_components'],
+            cv_results['optimal_alpha'],
+            init_reps,
+            constraint_config
+        )
+        results['final_model'] = final_model
+
+        # Step 6: Component analysis
+        logger.info("Step 6: Analyzing NNMF components...")
+        component_analysis = self.component_analyzer.summarize_components(
+            final_model, electrode_data, story_halves, subject_ids
+        )
+        results['components'] = component_analysis
+
+        # Step 7: Baseline comparisons
+        logger.info("Step 7: Running baseline method comparisons...")
+        baseline_results = self.baseline_comparator.run_baseline_comparisons(
+            electrode_data, story_lengths, cv_results['optimal_components'],
+            cv_splits, constraint_config
+        )
+        results['baselines'] = baseline_results
+
+        # Save results if requested
+        if save_results:
+            output_path = Path(output_dir) if output_dir else Path.cwd()
+            self._save_results(results, output_path)
+
+        logger.info("Complete NNMF analysis pipeline finished successfully!")
+        self._print_final_summary(results)
+
+        return results
+
+
+    def run_step_by_step(self, **kwargs) -> Dict[str, Any]:
+        """Run pipeline step-by-step for interactive analysis."""
+        # This allows users to run individual steps and inspect results
+        return self.run_complete_analysis(**kwargs)
+
+    def _validate_inputs(
+        self, 
+        electrode_data: np.ndarray, 
+        story_lengths: np.ndarray, 
+        subject_ids: List[str]
+    ):
+        """Validate input data consistency."""
+        n_electrodes, total_time = electrode_data.shape
+
+        # Check dimensions
+        assert len(subject_ids) == n_electrodes, f"Subject IDs length {len(subject_ids)} != n_electrodes {n_electrodes}"
+        assert np.sum(story_lengths) == total_time, f"Story lengths sum {np.sum(story_lengths)} != total_time {total_time}"
+
+        # Check data quality
+        assert not np.any(np.isnan(electrode_data)), "Electrode data contains NaN values"
+        assert not np.any(np.isinf(electrode_data)), "Electrode data contains infinite values"
+        assert np.all(story_lengths > 0), "All story lengths must be positive"
+
+        logger.info("Input validation passed")
+
+    def _save_results(self, results: Dict[str, Any], output_dir: Path):
+        """Save analysis results to disk."""
+        output_dir.mkdir(exist_ok=True)
+
+        # Save key results as numpy arrays
+        np.save(output_dir / 'final_model_W.npy', results['final_model']['W'])
+        np.save(output_dir / 'final_model_H.npy', results['final_model']['H'])
+
+        # Save statistics and parameters as pickled dict
+        import pickle
+        with open(output_dir / 'analysis_results.pkl', 'wb') as f:
+            pickle.dump(results, f)
+
+        logger.info(f"Results saved to {output_dir}")
+
+    def _print_final_summary(self, results: Dict[str, Any]):
+        """Print final analysis summary."""
+        print("\n" + "="*60)
+        print("NNMF ANALYSIS PIPELINE - FINAL SUMMARY")
+        print("="*60)
+
+        # Data summary
+        final_model = results['final_model']
+        stats = results['statistics']
+        cv = results['cross_validation']
+
+        print(f"\nData Summary:")
+        print(f"  Electrodes: {final_model['W'].shape[0]}")
+        print(f"  Time points: {final_model['H'].shape[1]}")
+        print(f"  Stories: {results['data_splits']['story_halves']['n_stories']}")
+
+        print(f"\nOptimal Model:")
+        print(f"  Components: {final_model['n_components']}")
+        print(f"  Alpha: {final_model['alpha']:.4f}")
+        print(f"  Variance explained: {final_model['variance_explained']:.3f}")
+
+        print(f"\nElectrode Reliability:")
+        n_electrodes = final_model['W'].shape[0]
+        n_sig_cr = stats['cross_run']['n_significant']
+        n_sig_perm = stats['cross_electrode']['n_significant_electrodes_perm']
+        print(f"  Cross-run significant: {n_sig_cr}/{n_electrodes} ({100*n_sig_cr/n_electrodes:.1f}%)")
+        print(f"  Permutation significant: {n_sig_perm}/{n_electrodes} ({100*n_sig_perm/n_electrodes:.1f}%)")
+
+        print(f"\nModel Quality:")
+        print(f"  2nd-level correlation: {stats['cross_electrode']['second_level_correlation']:.3f}")
+        print(f"  Reconstruction error: {final_model['reconstruction_error']:.6f}")
+
+        print("\n" + "="*60)
+
+# Convenience functions for direct usage
+def run_nnmf_analysis(
+    electrode_data: np.ndarray,
+    story_lengths: np.ndarray, 
+    subject_ids: List[str],
+    **kwargs
+) -> Dict[str, Any]:
+    """Convenience function to run complete analysis."""
+    pipeline = NNMFPipeline()
+    return pipeline.run_complete_analysis(
+        electrode_data, story_lengths, subject_ids, **kwargs
+    )
+
+def load_analysis_results(results_path: str) -> Dict[str, Any]:
+    """Load saved analysis results."""
+    import pickle
+    with open(results_path, 'rb') as f:
+        return pickle.load(f)
