@@ -1,0 +1,85 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment files
+.env
+.venv
+env/
+venv/
+ENV/
+*.env.*
+
+# VS Code, PyCharm, Sublime, and other IDE/editor meta
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test, coverage, build
+.tox/
+*.log
+*.tmp
+.cache/
+.tmp/
+*.coverage
+coverage.xml
+
+# Build
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Packaging
+*.whl
+*.manifest
+*.spec
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Wheels
+wheels/
+*.wheel
+
+# Distribution 
+downloads/
+sdist/
+*.tar.gz
+
+# MATLAB
+*.mat
+*.fig
+*.m~ 
+
+# Story and result files (adjust as needed)
+story_results/
+aqua_results/
+*.npz
+
+# Large HDF5 data
+*.h5
+
+# Personal/project meta files
+README_integration.md
+
+# Ignore these scripts if you only want core pipeline on git:
+analyze_story.py
+story_data_loader.py
+matlab_exporter.py
+story_visualizer.py
+
+# Uncomment this line to allow pushing selected files in these directories:
+#!story_results/.gitkeep
+
